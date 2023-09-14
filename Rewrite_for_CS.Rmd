@@ -1,0 +1,3268 @@
+---
+title: "Reanalysis of ABB and ADV data"
+author: "Zach Winn"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#set universal options
+knitr::opts_chunk$set(echo = TRUE)
+
+#clear environment
+remove(list = ls())
+
+#library
+library(tidyverse)
+library(asreml)
+library(rrBLUP)
+library(readxl)
+library(stringr)
+library(fuzzyjoin)
+library(knitr)
+library(psych)
+library(gaston)
+library(ggcorrplot)
+library(ggplot2)
+library(asreml)
+library(parallel)
+library(doParallel)
+library(foreach)
+```
+
+# Calculate BLUEs for each Enviornment in the ABB
+
+Here, I read in the data for the analysis. I then calculated BLUEs for each trait in the ABB. 
+
+```{r}
+#set directory
+setwd("C:/Users/zwinn/OneDrive/Publication/Published Manuscript Archive/Dylan's Paper Rewrite/First Revision - CS/New_Analysis/Analysis")
+
+#read data
+pheno_dat<-read.csv("Complete_ABB_and_AR_ADV_dat.csv") %>%
+  filter(population=="ABB")
+
+#BLUEs file
+location_blues_cv<-c()
+
+#define traits
+trait_names<-colnames(pheno_dat)[11:ncol(pheno_dat)]
+
+#define environments
+environments<-unique(pheno_dat$environment)
+
+#write loop
+
+for(i in environments){
+  
+  #announce
+  print(paste("Partitioning data for environment", i))
+  
+  #partition data for location
+  a<-pheno_dat %>%
+    filter(environment==i)
+  
+  #check what design the field is in
+  
+  if(i=="M14"|i=="M15"){
+    
+    #announce
+    print(paste("environment", i, "is in RCBD; performing RCBD model..."))
+    
+    #write loop to analyze traits
+    for(j in trait_names){
+      
+      #announce
+      print(paste("Attempting to Analyze", j, "in", i))
+      
+      #partition out trait in environment 
+      b<-a %>%
+        dplyr::select(genotype, rep, all_of(j)) %>%
+        drop_na()
+      
+      #check if that data was taken
+      if(nrow(b)==0){
+        
+        #announce
+        print(paste(j, "was not taken in", i))
+        
+      }else{
+        
+        #change trait name for ease of code
+        colnames(b)[3]<-"Y"
+        
+        #make sure the columns are the right class
+        b[,1:2]<-lapply(b[,1:2], as.factor)
+        b[,3]<-as.numeric(b[,3])
+        
+        #check if two reps were taken or only one rep
+        
+        if(length(unique(b$rep))==1){
+          
+          #announce
+          print(paste("Only one rep of data was taken for", j, "in", i, "- Not reporting BLUEs"))
+          
+        }else{
+          
+          #run mixed linear model
+          fit<-asreml(fixed = Y ~ genotype,
+                      random = ~ rep,
+                      residual = ~ idv(units),
+                      data = b,
+                      trace = FALSE)
+          
+          #check fixed significance
+          print(kable(wald(fit), caption = "Wald Statistic Chi-Squared Test for Fixed Effects"))
+          print("------------------------------------------------------")
+          
+          #pull BLUEs
+          preds<-predict(fit, classify = "genotype")$pvals[,1:2]
+          
+          #format
+          preds<-preds %>%
+            mutate( environment=i,
+                    Trait=j) %>%
+            select(environment, Trait, genotype, predicted.value) %>%
+            rename(BLUE=predicted.value)
+          
+          #bind
+          location_blues_cv<-rbind(location_blues_cv, preds)
+          
+          #remove
+          remove(b, fit, preds)
+          
+        }
+        
+      }
+        
+    }
+
+    
+  }else{
+    
+    #announce
+    print(paste("environment", i, "is in augmented block design; performing augmented block design..."))
+    
+        for(j in trait_names){
+      
+      #announce
+      print(paste("Attempting to Analyze", j, "in", i))
+      
+      #partition out trait in environment 
+      b<-a %>%
+        dplyr::select(genotype, rep, all_of(j)) %>%
+        drop_na()
+      
+      #check if that data was taken
+      if(nrow(b)==0){
+        
+        #announce
+        print(paste(j, "was not taken in", i))
+        
+      }else{
+        
+        #change trait name for ease of code
+        colnames(b)[3]<-"Y"
+        
+        #make sure the columns are the right class
+        b[,1:2]<-lapply(b[,1:2], as.factor)
+        b[,3]<-as.numeric(b[,3])
+        
+        #check if two reps were taken or only one rep
+        
+        if(length(unique(b$rep))==1){
+          
+          #announce
+          print(paste("Only one rep of data was taken for", j, "in", i, "- Not reporting BLUEs"))
+          
+        }else{
+          
+          #run mixed linear model
+          fit<-asreml(fixed = Y ~ genotype,
+                      random = ~ rep,
+                      residual = ~ idv(units),
+                      data = b,
+                      trace = FALSE)
+          
+          #check fixed significance
+          print(kable(wald(fit), caption = "Wald Statistic Chi-Squared Test for Fixed Effects"))
+          print("------------------------------------------------------")
+          
+          #pull BLUEs
+          preds<-predict(fit, classify = "genotype")$pvals[,1:2]
+          
+          #format
+          preds<-preds %>%
+            mutate( environment=i,
+                    Trait=j) %>%
+            select(environment, Trait, genotype, predicted.value) %>%
+            rename(BLUE=predicted.value)
+          
+          #bind
+          location_blues_cv<-rbind(location_blues_cv, preds)
+          
+          #remove
+          remove(b, fit, preds)
+          
+        }
+        
+      }
+        
+    }
+    
+  }
+
+  #announce
+  print(paste("Analysis completed for", i, "- Moving on."))
+  print("*************************************************")
+  print("*************************************************")
+  print("*************************************************")
+  
+  #remove
+  remove(a)
+    
+}
+
+#match fullsamplenames with genotypes
+location_blues_cv<-location_blues_cv %>%
+  left_join(pheno_dat %>% select(genotype, fullsamplename) %>% distinct(), by="genotype") %>%
+  select(environment, Trait, genotype, fullsamplename, BLUE)
+colnames(location_blues_cv)<-tolower(colnames(location_blues_cv))
+```
+
+# Calculate GRM and perform PCA
+
+Here I am taking the provided genotype matrix and calculating a GRM using the VanRaden method through the rrBLUP package A.mat() function.
+
+```{r}
+#read files
+files<-list.files()
+geno_file_name<-files[grep(".vcf.gz", files, ignore.case = T)]
+
+#calculate GRM
+geno_mat<-as.matrix(read.vcf(geno_file_name[1], convert.chr = FALSE))-1
+GRM<-A.mat(geno_mat)
+
+#subset just the ABB
+geno_mat_abb<-geno_mat[rownames(geno_mat) %in% location_blues_cv$fullsamplename,]
+
+#write PCA analysis [this will take a little while...]
+pca<-prcomp(geno_mat_abb)
+imp<-summary(pca)$importance[,1:5]
+kable(imp)
+
+pca<-as.data.frame(pca$x)
+pca<-pca %>%
+  rownames_to_column(var = "Line_Name")
+pca<-pca %>%  
+  mutate(Program=ifelse(Line_Name %in% Line_Name[grep("ARLA", Line_Name)], "LA", 
+                        ifelse(Line_Name %in% Line_Name[grep("AR", Line_Name)], "AR", 
+                               ifelse(Line_Name %in% Line_Name[grep("GANC", Line_Name)], "NC",
+                                      ifelse(Line_Name %in% Line_Name[grep("GA", Line_Name)], "GA",
+                                             ifelse(Line_Name %in% Line_Name[grep("NC", Line_Name)], "NC", 
+                                                    ifelse(Line_Name %in% Line_Name[grep("LA", Line_Name)], "LA", 
+                                                           ifelse(Line_Name %in% Line_Name[grep("NB", Line_Name)], "NC", "GA")))))))) %>%
+  select(Program, everything())
+
+a<-ggplot(data = pca, aes(x=PC1, y=PC2, color=Program, shape=Program))+
+  geom_point()+
+  labs(x=paste("PC1 (", round(imp[2,1]*100, 2) ,"%)", sep = ""),
+       y=paste("PC2 (", round(imp[2,2]*100, 2),"%)", sep = ""),
+       title = "PC1 vs PC2 of Molecular Marker PCA")
+a
+ggsave("PC1_vs_PC2.png",
+       plot = last_plot(),
+       device = "png",
+       width = 6,
+       height = 5,
+       units = "in")
+```
+
+# Calculate BLUEs across environments
+
+Here we are running the following model:
+
+$$
+y_{ij}=\mu+G_i+e_j+\varepsilon_{ij}
+$$
+
+Where y_ij is the response, G is the fixed genotype effect, e is the random environment effect, and $\varepsilon$ is the residual error that is IID.This is just a baseline calculation to make a pairs plot of BLUEs. 
+
+```{r}
+#define traits
+trait_names<-colnames(pheno_dat)[11:ncol(pheno_dat)]
+
+#make a file to bind onto 
+me_blues_cv<-data.frame(fullsamplename=unique(pheno_dat$fullsamplename))
+uv_h2<-c()
+
+
+for(i in trait_names){
+  
+  #BLUE estimation
+  print(paste("Analyzing", i))
+  a<-location_blues_cv %>% filter(trait==i) %>% drop_na()
+  a<-a %>% 
+    filter(fullsamplename %in% colnames(GRM)) %>%
+    select(-genotype)
+  b<-GRM[rownames(GRM) %in% a$fullsamplename,
+         colnames(GRM) %in% a$fullsamplename]
+  
+  a[1:3]<-lapply(a[,1:3], as.factor)
+  a[,4]<-as.numeric(a[,4])
+  
+  
+  fit<-asreml(fixed = blue~fullsamplename,
+              random = ~id(environment),
+              residual = ~id(units),
+              data = a,
+              trace = FALSE)
+  
+  print(kable(wald(fit), caption = paste("Wald Test for", i)))
+  pred<-predict(fit, classify = "fullsamplename")$pvals[,1:2]
+  colnames(pred)[2]=i
+  me_blues_cv<-left_join(me_blues_cv, pred, by="fullsamplename")
+  
+  #heritability estimate
+  fit<-asreml(fixed = blue~1,
+              random = ~vm(fullsamplename, b)+id(environment),
+              residual = ~id(units),
+              data = a,
+              trace = FALSE,
+              maxit = 75)
+  
+  h2<-vpredict(fit, ~(V2/(V2+V3)))
+  h2<-h2 %>% 
+    mutate(Trait=gsub("_"," ",i)) %>% 
+    select(Trait, Estimate, SE) %>%
+    rename(H2=Estimate)
+  print(kable(h2, caption = paste("Univariate Heritability for", i), row.names = F))
+  uv_h2<-rbind(uv_h2, h2)
+  
+  #remove
+  remove(a,b,fit,pred,h2)
+  
+}
+
+
+
+for_graph<-me_blues_cv %>%
+  rename(`Plant Height (cm)`=plant_height,
+         `Heading Date (Days)`=heading_date,
+         `Grain Yield (t/ha)`=grain_yield,
+         `Test Weight (kg/hL)`=test_weight)
+
+pairs.panels(for_graph[,2:ncol(for_graph)],
+             lm = T,
+             hist.col = "gray",
+             stars = T)
+
+```
+
+# Create datasets for multienvironmental models
+
+Here I will run multivariate genomic selection across locations using the following model 
+
+$$
+c(y_1,y_2,y_3,y_4)=\mu+g_i+e_j+\varepsilon_{ij}
+$$
+
+Where the left side of the equation contains all recorded values for plant height, heading date, grain yield, and test weight, g is the random genotype effect with covariance structure defined by the GRM, e is the random environment interaction, and $\varepsilon$ is the residual error. We cannot estimate the g:e interaction here because of lack of replication in the environments. This means that the g:e term is conflated with the error term.  
+
+I will treat G as fixed to estimate correlations of BLUEs and I will treat it as random to estimate heritability using gBLUP. Genetic correlations will be drawn from random multivariate models. Genetic correlations were calculated as:
+
+$$
+\frac{COV_{yi,yj}}{\sqrt(\sigma^{2}_{yi}*\sigma^{2}_{yj})}
+$$
+
+or simply the covariace of two traits divided by the square root of the product of their variances.
+
+Heritability is calculated from the gBLUP model as
+
+$$
+h_{gBLUP}=\frac{\sigma^2_{g(y)}}{\sigma^2_{g(y)}+\sigma^2_{\varepsilon (y)}}
+$$
+or simply the total variance of the trait in the model divided by the residual of the trait.
+
+```{r}
+#define workspace
+if(Sys.info()['sysname']=="Windows"){
+  
+  #define usable RAM for windows users
+  ws<-system('wmic OS get FreePhysicalMemory /Value', intern = T)[3]
+  ws<-gsub("FreePhysicalMemory=",
+           "",
+           ws)
+  ws<-as.numeric(gsub("\r", "", ws))
+  ws<-round(ws/1000000,0) #define and give yourself 500kb wiggle room
+  ws<-paste(ws,"gb",sep = "")
+
+}else{
+  
+  #otherwise define it manually
+  ws="10gb"
+  
+}
+
+
+#define datasets
+mvm_dat<-location_blues_cv
+mvm_dat<-mvm_dat %>% 
+  filter(fullsamplename %in% colnames(GRM))
+GRM<-GRM[rownames(GRM) %in% mvm_dat$fullsamplename,
+         colnames(GRM) %in% mvm_dat$fullsamplename]
+
+#check length
+unique(mvm_dat$fullsamplename %in% colnames(GRM))
+
+#make sure data is formatted correctly
+a<-mvm_dat %>% distinct(environment, fullsamplename)
+
+for(i in trait_names){
+  b<-mvm_dat %>% 
+    filter(trait==i) %>%
+    dplyr::select(environment, fullsamplename, blue)
+  colnames(b)[3]=i
+  a<-left_join(a,b, by=c("environment", "fullsamplename"))
+}
+
+mvm_dat<-a 
+
+remove(a,b)
+
+#format all collumns
+mvm_dat[,1:2]<-lapply(mvm_dat[,1:2], as.factor)
+mvm_dat[,3:ncol(mvm_dat)]<-lapply(mvm_dat[,3:ncol(mvm_dat)], as.numeric)
+
+#subset to run model over everything
+a<-mvm_dat
+
+b<-GRM[rownames(GRM) %in% a$fullsamplename,
+       colnames(GRM) %in% a$fullsamplename]
+
+a[,1:2]<-lapply(a[,1:2], as.factor)
+a[,3:ncol(a)]<-lapply(a[,3:ncol(a)], as.numeric)
+
+#write a multivariate variate model to estimate genetic correlation
+fit<-asreml(fixed = cbind(plant_height,
+                          heading_date,
+                          grain_yield,
+                          test_weight)~trait,
+            random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+            residual = ~id(units):us(trait),
+            data = a,
+            na.action = asreml::na.method(y='include', x='include'),
+            workspace = ws,
+            maxit = 50,
+            trace = TRUE)
+fit<-update.asreml(fit)
+
+#calculate the genetic correlation of traits in the data
+vcomp<-data.frame(summary(fit)$varcomp)
+vcomp<-rownames_to_column(vcomp, "variance_component_id")
+rownames(vcomp)<-paste("V",seq(1:nrow(vcomp)), sep = "")
+colnames(vcomp)[2:ncol(vcomp)]<-c("component_estimate",
+                                 "standard_error",
+                                 "z_ratio",
+                                 "bound_check",
+                                 "percent_change_in_last_iteration")
+kable(vcomp, align = "c", digits = 2, caption = "Multi-Trait Model Variance Components")
+
+ph_hd<-vpredict(fit, ~ V3 / sqrt(V2 * V4))$Estimate
+ph_tw<-vpredict(fit, ~ V8 / sqrt(V2 * V11))$Estimate
+ph_gy<-vpredict(fit, ~ V5 / sqrt(V2 * V7))$Estimate
+gy_tw<-vpredict(fit, ~ V10 / sqrt(V7 * V11))$Estimate
+gy_hd<-vpredict(fit, ~ V6 / sqrt(V7 * V4))$Estimate
+tw_hd<-vpredict(fit, ~ V9 / sqrt(V11 * V4))$Estimate
+
+cormat<-matrix(data=c(1,gy_tw,gy_hd,ph_gy,
+                      0, 1, tw_hd, ph_tw,
+                      0, 0, 1, ph_hd,
+                      0, 0 , 0, 1),
+       
+               ncol = 4,
+               nrow = 4,
+               byrow = T)
+cormat[lower.tri(cormat)]=cormat[upper.tri(cormat)]
+colnames(cormat)<-c("Grain Yield", "Test Weight", "Heading Date", "Plant Height")
+rownames(cormat)<-colnames(cormat)
+cormat<-cormat[order(rownames(cormat)), order(colnames(cormat))]
+ggcorrplot(cormat,
+           method = "square",
+           type = "upper",
+           show.diag = FALSE,
+           show.legend = TRUE,
+           legend.title = "r",
+           lab = T)
+ggsave(filename = "Fig_2.png",
+       plot = last_plot(),
+       device = "png",
+       dpi = 300,
+       width = 6,
+       height = 6)
+
+h2_ph<-vpredict(fit, ~ V2/(V2+V13))
+h2_hd<-vpredict(fit, ~ V4/(V4+V15))
+h2_gy<-vpredict(fit, ~ V7/(V7+V18))
+h2_tw<-vpredict(fit, ~ V11/(V11+V22))
+
+
+ME_MV_H2<-rbind(h2_gy,
+                h2_tw,
+                h2_ph,
+                h2_hd)
+
+ME_MV_H2<-cbind(Trait=c("grain_yield",
+                        "test_weight",
+                        "plant_height",
+                        "heading_date"),
+                ME_MV_H2)
+
+#get table 1
+mvm_dat<-location_blues_cv
+
+ME_Stats<-mvm_dat %>%
+  group_by(trait) %>%
+  summarise(Mean=mean(blue, na.rm = T),
+            Min=min(blue, na.rm = T),
+            Max=max(blue, na.rm = T),
+            SD=sd(blue, na.rm = T))
+
+ME_Stats<-left_join(ME_Stats %>% rename(Trait=trait), ME_MV_H2, by="Trait")
+colnames(ME_Stats)[6]="H2"
+
+ME_Stats<-ME_Stats %>%
+  filter(!Trait=="Maturity_Date") %>%
+  mutate(Trait=gsub("_", " ", Trait),
+         Trait=str_to_title(Trait))
+
+write.csv(ME_Stats,
+          "Table 1 Stats.csv",
+          row.names = F)
+
+#define dataset
+mvm_dat<-location_blues_cv
+mvm_dat<-mvm_dat %>% 
+  filter(fullsamplename %in% colnames(GRM))
+
+a<-mvm_dat %>% distinct(environment, fullsamplename)
+
+for(i in trait_names){
+  b<-mvm_dat %>% 
+    filter(trait==i) %>%
+    dplyr::select(environment, fullsamplename, blue)
+  colnames(b)[3]=i
+  a<-left_join(a,b, by=c("environment", "fullsamplename"))
+}
+
+mvm_dat<-a
+
+remove(a,b)
+
+#format all collumns
+mvm_dat[,1:2]<-lapply(mvm_dat[,1:2], as.factor)
+mvm_dat[,3:ncol(mvm_dat)]<-lapply(mvm_dat[,3:ncol(mvm_dat)], as.numeric)
+
+#display table
+kable(ME_Stats, digits = 2, caption = "General Stats for Analysis of Phenotypic Information")
+kable(uv_h2, digits = 2, caption = "Univarite h2 Estimates", row.names = F)
+```
+
+# Write generic function for univariate model CV
+
+Here I am going to write a function to do a generic univariate model.
+
+```{r}
+####for debug###
+
+#this is the dataset for cross validation
+# data=mvm_dat
+# genotype_col_name="fullsamplename"
+# env_col_name="environment"
+# trait = c("grain_yield")
+# grm=GRM
+# BLUE_fixed = formula(y_1 ~ genotype_col_name)
+# BLUE_random = formula(~ id(env_col_name))
+# BLUE_residual = formula(~ id(units))
+# BLUP_fixed = formula(y_1 ~ 1)
+# BLUP_random = formula(~ vm(genotype_col_name, grm)+id(env_col_name))
+# BLUP_residual = formula(~id(units))
+# workspace = NULL
+# graph_on = TRUE
+# trace_on = TRUE
+# n_maxit = NULL
+
+####function start####
+
+univariate_five_fold_cv<-function(data,
+                                  genotype_col_name,
+                                  env_col_name, 
+                                  trait, 
+                                  grm,
+                                  BLUE_fixed,
+                                  BLUE_random,
+                                  BLUE_residual,
+                                  BLUP_fixed,
+                                  BLUP_random,
+                                  BLUP_residual,
+                                  workspace,
+                                  graph_on,
+                                  trace_on,
+                                  n_maxit){
+  
+  #pull relevant data
+  a<-data[,c(genotype_col_name, env_col_name, trait)]
+
+  colnames(a)<-c("genotype_col_name",
+                 "env_col_name",
+                 "y_1")
+
+  
+  #make first two columns into levels
+  a[,1:2]<-lapply(a[,1:2], as.factor)
+  
+  #make everything else numeric
+  a[,3]<-as.numeric(a[,3])
+  
+  #select out only the lines in dataset from the grm
+  grm<-grm[rownames(grm) %in% unique(a[,1]),
+           colnames(grm) %in% unique(a[,1])]
+  
+  #make sure the lines in the dataframe are in the grm
+  a<-a[a[,1] %in% rownames(grm),]
+  
+  #check if grm and data are same size
+  if(isTRUE(unique(unique(a[,1]) %in% rownames(grm)))){
+    #for testing
+    #print(paste("The dataframe and grm have the same number of lines;",
+    #            "proceeding with analysis for",
+    #            traits[1]))
+  }else{
+    stop(paste("Not all lines in the dataset are found in the grm;",
+                "aborting analysis for",
+                traits[1]))
+  }
+  
+  #move on after truth check
+  #make a partition of the dataset randomly into training and test
+  train=sample(rownames(grm),
+               size = round(length(unique(a[,1]))*.8, digits = 0))
+  test=rownames(grm)[!rownames(grm) %in% train] 
+  
+  if(isFALSE(unique(test %in% train))){
+    #for testing
+    #print(paste("Subdivsion of training and test successful;",
+    #            "proceeding with analysis for",
+    #            traits[1]))
+  }else{
+    stop(paste("Subdivsion of training and test unsuccessful;",
+               "check grm for duplicated name..."))
+  }
+  
+  #you have to assign things to the global environment because asreml is stupid
+  assign("a", a, envir = globalenv() )
+  assign("grm", grm, envir = globalenv() )
+  assign("BLUE_fixed", BLUE_fixed, envir = globalenv() )
+  assign("BLUE_random", BLUE_random, envir = globalenv() )
+  assign("BLUE_residual", BLUE_residual, envir = globalenv() )
+  assign("BLUP_fixed", BLUP_fixed, envir = globalenv() )
+  assign("BLUP_random", BLUP_random, envir = globalenv() )
+  assign("BLUP_residual", BLUP_residual, envir = globalenv() )
+  assign("workspace", workspace, envir = globalenv() )
+  
+  #calculate a dataset of adjusted means for the
+  #the training data
+  blues<-asreml::asreml(fixed = BLUE_fixed, 
+                        random = BLUE_random, 
+                        residual = BLUE_residual,
+                        data = a,
+                        trace = trace_on,
+                        workspace = workspace,
+                        maxit = n_maxit)
+
+  blues<-asreml::predict.asreml(blues, classify =  "genotype_col_name")$pvals
+  blues<-blues[blues$genotype_col_name %in% test,] 
+  blues<-blues[,c("genotype_col_name", "predicted.value")]  
+  colnames(blues)[2]="UV_BLUE"
+  
+  #move on after truth check
+  #partition dataset
+  a[a$genotype_col_name %in% test, "y_1"]=NA 
+  assign("a", a, envir = globalenv() )
+  
+  #run ASREML gBLUP
+  blups<-asreml::asreml(fixed = BLUP_fixed,
+                        random = BLUP_random,
+                        residual = BLUP_residual,
+                        data = a,
+                        trace = trace_on,
+                        workspace = workspace,
+                        maxit = n_maxit)
+  blups<-asreml::update.asreml(blups)
+
+  #pull predictions for test
+  blups<-asreml::predict.asreml(blups, classify = "genotype_col_name")$pvals
+  blups<-blups[blups$genotype_col_name %in% blues$genotype_col_name,
+               c("genotype_col_name", "predicted.value")] 
+  colnames(blups)[2]="MV_BLUP"
+  
+  #put together results
+  blues<-blues[order(blues$genotype_col_name),]
+  blups<-blups[match(blues$genotype_col_name, blups$genotype_col_name),]
+  corr<-cbind(blues, blups[,2])
+  colnames(corr)[3]="MV_BLUP"
+  
+  if(isTRUE(graph_on)){
+    
+    plot(corr$UV_BLUE, 
+         corr$UV_BLUP,
+         xlab = "Calculated Univariate BLUE",
+         ylab = "Calculated Univaritae BLUP",
+         main = paste("GEBV vs BLUE for", trait))
+    
+  }else{
+    
+    #do nothing
+    
+  }
+  
+  #calculate correlation
+  corr<-cor(corr[,2:ncol(corr)])[1,2]
+  
+  #remove things from the global environment
+  remove(a,
+         grm,
+         BLUE_fixed,
+         BLUE_random,
+         BLUE_residual,
+         BLUP_fixed,
+         BLUP_random,
+         BLUP_residual,
+         workspace)
+  
+  #return the correlation
+  return(corr)
+}
+
+#univarite for yield
+# univariate_five_fold_cv(data = mvm_dat,
+#                         genotype_col_name = "fullsamplename",
+#                         env_col_name = "environment",
+#                         trait = c("grain_yield"),
+#                         grm = GRM,
+#                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+#                         BLUE_random = formula(~id(env_col_name)),
+#                         BLUE_residual = formula(~id(units)),
+#                         BLUP_fixed = formula(y_1 ~ 1),
+#                         BLUP_random = formula(~ vm(genotype_col_name, grm)+id(env_col_name)),
+#                         BLUP_residual = formula(~id(units)),
+#                         workspace = NULL,
+#                         graph_on = T,
+#                         trace_on = T,
+#                         n_maxit = NULL)
+```
+
+# Write generic function for multivariate model CV
+
+Here I am going to write a function to do a generic multivariate model.
+
+```{r}
+####for debug#### 
+#this is the dataset for cross validation
+# data=mvm_dat 
+# genotype_col_name="fullsamplename" 
+# env_col_name="environment" 
+# traits=c("grain_yield", "test_weight", "heading_date")
+# grm=GRM
+# BLUE_fixed = formula(y_1 ~ genotype_col_name)
+# BLUE_random = formula(~id(env_col_name))
+# BLUE_residual = formula(~id(units))
+# BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait)
+# BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait))
+# BLUP_residual = formula(~id(units):us(trait))
+# workspace = NULL
+# graph_on = TRUE
+# trace_on = TRUE
+# n_maxit = NULL
+
+####function start####
+
+
+multivariate_five_fold_cv<-function(data,
+                                    genotype_col_name,
+                                    env_col_name, 
+                                    traits, 
+                                    grm,
+                                    BLUE_fixed,
+                                    BLUE_random,
+                                    BLUE_residual,
+                                    BLUP_fixed,
+                                    BLUP_random,
+                                    BLUP_residual,
+                                    workspace,
+                                    graph_on,
+                                    trace_on,
+                                    n_maxit){
+  
+  #pull relevant data
+  a<-data[,c(genotype_col_name, env_col_name, traits)]
+
+  colnames(a)<-c("genotype_col_name",
+                 "env_col_name",
+                 paste("y_", 
+                       seq(1,ncol(a[,3:ncol(a)])), 
+                       sep = ""))
+
+  
+  #make first two columns into levels
+  a[,1:2]<-lapply(a[,1:2], as.factor)
+  
+  #make everything else numeric
+  a[,3:ncol(a)]<-lapply(a[,3:ncol(a)], as.numeric)
+  
+  #select out only the lines in dataset from the grm
+  grm<-grm[rownames(grm) %in% unique(a[,1]),
+           colnames(grm) %in% unique(a[,1])]
+  
+  #make sure the lines in the dataframe are in the grm
+  a<-a[a[,1] %in% rownames(grm),]
+  
+  #check if grm and data are same size
+  if(isTRUE(unique(unique(a[,1]) %in% rownames(grm)))){
+    #for testing
+    #print(paste("The dataframe and grm have the same number of lines;",
+    #            "proceeding with analysis for",
+    #            traits[1]))
+  }else{
+    stop(paste("Not all lines in the dataset are found in the grm;",
+                "aborting analysis for",
+                traits[1]))
+  }
+  
+  #move on after truth check
+  #make a partition of the dataset randomly into training and test
+  train=sample(rownames(grm),
+               size = round(length(unique(a[,1]))*.8, digits = 0))
+  test=rownames(grm)[!rownames(grm) %in% train] 
+  
+  if(isFALSE(unique(test %in% train))){
+    #for testing
+    #print(paste("Subdivsion of training and test successful;",
+    #            "proceeding with analysis for",
+    #            traits[1]))
+  }else{
+    stop(paste("Subdivsion of training and test unsuccessful;",
+               "check grm for duplicated name..."))
+  }
+  
+  #you have to assign things to the global environment because asreml is stupid
+  assign("a", a, envir = globalenv() )
+  assign("grm", grm, envir = globalenv() )
+  assign("BLUE_fixed", BLUE_fixed, envir = globalenv() )
+  assign("BLUE_random", BLUE_random, envir = globalenv() )
+  assign("BLUE_residual", BLUE_residual, envir = globalenv() )
+  assign("BLUP_fixed", BLUP_fixed, envir = globalenv() )
+  assign("BLUP_random", BLUP_random, envir = globalenv() )
+  assign("BLUP_residual", BLUP_residual, envir = globalenv() )
+  assign("workspace", workspace, envir = globalenv() )
+  
+  #calculate a dataset of adjusted means for the
+  #the training data
+  blues<-asreml::asreml(fixed = BLUE_fixed, 
+                        random = BLUE_random, 
+                        residual = BLUE_residual,
+                        data = a,
+                        trace = trace_on,
+                        workspace = workspace,
+                        maxit = n_maxit)
+
+  blues<-asreml::predict.asreml(blues, classify =  "genotype_col_name")$pvals
+  blues<-blues[blues$genotype_col_name %in% test,] 
+  blues<-blues[,c("genotype_col_name", "predicted.value")]  
+  colnames(blues)[2]="UV_BLUE"
+  
+  #move on after truth check
+  #partition dataset
+  a[a$genotype_col_name %in% test, "y_1"]=NA 
+  assign("a", a, envir = globalenv() )
+  
+  #run ASREML gBLUP
+  blups<-asreml::asreml(fixed = BLUP_fixed,
+                        random = BLUP_random,
+                        residual = BLUP_residual,
+                        data = a,
+                        trace = trace_on,
+                        workspace = workspace,
+                        maxit = n_maxit)
+  blups<-asreml::update.asreml(blups)
+
+  #pull predictions for test
+  blups<-asreml::predict.asreml(blups, classify = "genotype_col_name:trait")$pvals
+  blups<-blups[blups$genotype_col_name %in% blues$genotype_col_name & blups$trait=="y_1",
+               c("genotype_col_name", "predicted.value")] 
+  colnames(blups)[2]="MV_BLUP"
+  
+  #put together results
+  blues<-blues[order(blues$genotype_col_name),]
+  blups<-blups[match(blues$genotype_col_name, blups$genotype_col_name),]
+  corr<-cbind(blues, blups[,2])
+  colnames(corr)[3]="MV_BLUP"
+  
+  if(isTRUE(graph_on)){
+    
+    plot(corr$UV_BLUE, 
+         corr$MV_BLUP,
+         xlab = "Calculated Univariate BLUE",
+         ylab = "Calculated Multivariate BLUP",
+         main = paste("GEBV vs BLUE for", traits[1]))
+    
+  }else{
+    
+    #do nothing
+    
+  }
+
+  #remove things from the global environment
+  remove(a,
+         grm,
+         BLUE_fixed,
+         BLUE_random,
+         BLUE_residual,
+         BLUP_fixed,
+         BLUP_random,
+         BLUP_residual,
+         workspace)
+  
+  #calculate correlation
+  corr<-cor(corr[,2:ncol(corr)])[1,2]
+  
+  #return the correlation
+  return(corr)
+}
+
+####for debug####
+
+#NOTE: I am commenting this out because it takes a long time and I know it works as of 9-15-22
+
+#two traits
+# multivariate_five_fold_cv(data = mvm_dat,
+#                           genotype_col_name = "fullsamplename",
+#                           env_col_name = "environment",
+#                           traits = c("grain_yield", "test_weight"),
+#                           grm = GRM,
+#                           BLUE_fixed = formula(y_1 ~ genotype_col_name),
+#                           BLUE_random = formula(~id(env_col_name)),
+#                           BLUE_residual = formula(~id(units)),
+#                           BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+#                           BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+#                           BLUP_residual = formula(~id(units):us(trait)),
+#                           workspace = NULL,
+#                           graph_on = T,
+#                           trace_on = T,
+#                           n_maxit = NULL)
+
+#four traits
+#multivariate_five_fold_cv(data = mvm_dat,
+#                          genotype_col_name = "fullsamplename",
+#                          env_col_name = "environment",
+#                          traits = c("grain_yield", "test_weight", "plant_height", "heading_date"),
+#                          grm = GRM,
+#                          BLUE_fixed = formula(y_1 ~ genotype_col_name),
+#                          BLUE_random = formula(~id(env_col_name)),
+#                          BLUE_residual = formula(~id(units)),
+#                          BLUP_fixed = formula(cbind(y_1, y_2, y_3, y_4) ~ trait),
+#                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+#                          BLUP_residual = formula(~id(units):us(trait)),
+#                          workspace = "8gb",
+#                          graph_on = T,
+#                          trace_on = T, 
+#                          n_maxit = 15)
+
+#in a loop
+#for(i in 1:2){
+#  print(  
+#  multivariate_five_fold_cv(data = mvm_dat,
+#                            genotype_col_name = "fullsamplename",
+#                            env_col_name = "environment",
+#                            traits = c("grain_yield", "test_weight"),
+#                            grm = GRM,
+#                            BLUE_fixed = formula(y_1 ~ genotype_col_name),
+#                            BLUE_random = formula(~id(env_col_name)),
+#                            BLUE_residual = formula(~id(units)),
+#                            BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+#                            BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+#                            BLUP_residual = formula(~id(units):us(trait)),
+#                            workspace = NULL,
+#                            graph_on = T,
+#                            trace_on = T,
+#                            n_maxit = NULL)
+#  )
+#
+#}
+```
+
+
+# Create loop for forward validation
+
+Here I am going to now take both the functions I have written and then package them into a loop to run many times (maybe 100, law of large numbers says 30 is fine)...  
+
+Here are the numbers:  
+
+- The number of traits is 4  
+- We want to compare the univariate case and then all the combinations of that trait with all three of those traits (7 possible combinations)
+- That equals 32 total models over 100 permutations, so 3,200 models
+- The biggest model took about a minute to run when workspace was allocated  
+
+Thus, this will take ~3,200 minutes or 53.33 hours on this machine (not all the models are that beefy, it will probably be less).
+
+## Update
+
+After doing some coding, it appears that this loop of 32 models can be completed in about 15 minutes on this computer. So the whole thing, repeated 100 times, will be about 25 hours total run time on this machine. 
+
+
+### Update
+
+I am going to to try to parallelize this loop so it doesn't take forever...
+
+```{r}
+# #test if it works
+# test <- foreach(perms = 1:2, .combine=cbind) %do% {
+# 
+# multivariate_five_fold_cv(data = mvm_dat,
+#                           genotype_col_name = "fullsamplename",
+#                           env_col_name = "environment",
+#                           traits = c("grain_yield", "test_weight", "plant_height", "heading_date"),
+#                           grm = GRM,
+#                           BLUE_fixed = formula(y_1 ~ genotype_col_name),
+#                           BLUE_random = formula(~id(env_col_name)),
+#                           BLUE_residual = formula(~id(units)),
+#                           BLUP_fixed = formula(cbind(y_1, y_2, y_3, y_4) ~ trait),
+#                           BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+#                           BLUP_residual = formula(~id(units):us(trait)),
+#                           workspace = "8gb",
+#                           graph_on = T,
+#                           trace_on = T,
+#                           n_maxit = 15)
+# 
+# }
+# 
+# #now run in parallel 
+# n_cores = detectCores()
+# 
+# #Leave one core to avoid overload your computer
+# cluster<-makeCluster(n_cores-1)
+# registerDoParallel(cluster)
+# 
+# #test if it works
+# test2 <- foreach(perms = 1:2, .combine=rbind) %dopar% {
+# 
+#   multivariate_five_fold_cv(data = mvm_dat,
+#                             genotype_col_name = "fullsamplename",
+#                             env_col_name = "environment",
+#                             traits = c("grain_yield", "test_weight", "plant_height", "heading_date"),
+#                             grm = GRM,
+#                             BLUE_fixed = formula(y_1 ~ genotype_col_name),
+#                             BLUE_random = formula(~id(env_col_name)),
+#                             BLUE_residual = formula(~id(units)),
+#                             BLUP_fixed = formula(cbind(y_1, y_2, y_3, y_4) ~ trait),
+#                             BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+#                             BLUP_residual = formula(~id(units):us(trait)),
+#                             workspace = "8gb",
+#                             graph_on = F,
+#                             trace_on = T,
+#                             n_maxit = 15)
+#   
+# }
+# 
+# stopCluster(cluster)
+```
+
+## Update
+
+Fun fact - doing things in parallel gets rid of all the print output. Kinda makes it a black box that you never know when it is going to finish...
+
+We will see what happens...
+
+
+```{r}
+####for debug####
+#perms=3
+#gy_uv=1
+#tw_uv=1
+#ph_uv=1
+#hd_uv=1
+#gy_tw_mv=1
+#gy_ph_mv=1
+#gy_hd_mv=1
+#gy_tw_ph_mv=1
+#gy_tw_hd_mv=1
+#gy_ph_hd_mv=1
+#gy_tw_ph_hd_mv=1
+#tw_gy_mv=1
+#tw_ph_mv=1
+#tw_hd_mv=1
+#tw_gy_ph_mv=1
+#tw_gy_hd_mv=1
+#tw_ph_hd_mv=1
+#tw_gy_ph_hd_mv=1
+#ph_gy_mv=1
+#ph_tw_mv=1
+#ph_hd_mv=1
+#ph_gy_tw_mv=1
+#ph_gy_hd_mv=1
+#ph_tw_hd_mv=1
+#ph_gy_tw_hd_mv=1
+#hd_gy_mv=1
+#hd_tw_mv=1
+#hd_ph_mv=1
+#hd_gy_tw_mv=1
+#hd_gy_ph_mv=1
+#hd_tw_ph_mv=1
+#hd_gy_tw_ph_mv=1
+
+####for loop analysis####
+#for analysis permutation number
+perms=100
+
+#define the number of models (for feedback from the loop)
+n_fit<-32
+
+#define workspace in gigabytes of RAM
+ram="5gb"
+
+#do you want graphs on?
+g=F
+
+#do you want trace on?
+t=F
+
+#maximum iterations for convergence?
+mi=25
+
+#read in a template for the results file
+files<-list.files()
+template<-files[grep("Template", files, ignore.case = T)]
+template<-read_excel(template,
+                     na = "NA")
+#check and see if the results are already there
+check<-files[grep("CV-Results", files, ignore.case = T)]
+
+#detect cores
+n_cores = detectCores()
+
+#Leave one core to avoid overload your computer
+cluster<-makeCluster(n_cores-1)
+registerDoParallel(cluster)
+
+
+if(length(check)==0){
+  
+  #print
+  print(paste("Begining permutational CV analysis! System time =", Sys.time()))
+  
+  #run permutation analysis in parallel
+  CV_Corrs<-foreach(perms = 1:perms, .combine=rbind) %dopar% {
+  
+  ####Univariate Models####
+  
+  #one
+  gy_uv<-univariate_five_fold_cv(data = mvm_dat,
+                                 genotype_col_name = "fullsamplename",
+                                 env_col_name = "environment",
+                                 trait = c("grain_yield"),
+                                 grm = GRM,
+                                 BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                 BLUE_random = formula(~id(env_col_name)),
+                                 BLUE_residual = formula(~id(units)),
+                                 BLUP_fixed = formula(y_1 ~ 1),
+                                 BLUP_random = formula(~ vm(genotype_col_name, grm)+id(env_col_name)),
+                                 BLUP_residual = formula(~id(units)),
+                                 workspace = NULL,
+                                 graph_on = g,
+                                 trace_on = t,
+                                 n_maxit = NULL)
+  
+  tw_uv<-univariate_five_fold_cv(data = mvm_dat,
+                                 genotype_col_name = "fullsamplename",
+                                 env_col_name = "environment",
+                                 trait = c("test_weight"),
+                                 grm = GRM,
+                                 BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                 BLUE_random = formula(~id(env_col_name)),
+                                 BLUE_residual = formula(~id(units)),
+                                 BLUP_fixed = formula(y_1 ~ 1),
+                                 BLUP_random = formula(~ vm(genotype_col_name, grm)+id(env_col_name)),
+                                 BLUP_residual = formula(~id(units)),
+                                 workspace = NULL,
+                                 graph_on = g,
+                                 trace_on = t,
+                                 n_maxit = NULL)
+
+  ph_uv<-univariate_five_fold_cv(data = mvm_dat,
+                                 genotype_col_name = "fullsamplename",
+                                 env_col_name = "environment",
+                                 trait = c("plant_height"),
+                                 grm = GRM,
+                                 BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                 BLUE_random = formula(~id(env_col_name)),
+                                 BLUE_residual = formula(~id(units)),
+                                 BLUP_fixed = formula(y_1 ~ 1),
+                                 BLUP_random = formula(~ vm(genotype_col_name, grm)+id(env_col_name)),
+                                 BLUP_residual = formula(~id(units)),
+                                 workspace = NULL,
+                                 graph_on = g,
+                                 trace_on = t,
+                                 n_maxit = NULL)
+  
+  hd_uv<-univariate_five_fold_cv(data = mvm_dat,
+                                 genotype_col_name = "fullsamplename",
+                                 env_col_name = "environment",
+                                 trait = c("heading_date"),
+                                 grm = GRM,
+                                 BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                 BLUE_random = formula(~id(env_col_name)),
+                                 BLUE_residual = formula(~id(units)),
+                                 BLUP_fixed = formula(y_1 ~ 1),
+                                 BLUP_random = formula(~ vm(genotype_col_name, grm)+id(env_col_name)),
+                                 BLUP_residual = formula(~id(units)),
+                                 workspace = NULL,
+                                 graph_on = g,
+                                 trace_on = t,
+                                 n_maxit = NULL)
+  
+  gy_tw_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("grain_yield", "test_weight"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  gy_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("grain_yield", "plant_height"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  gy_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("grain_yield", "heading_date"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  gy_tw_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("grain_yield", "test_weight", "plant_height"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+
+  gy_tw_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("grain_yield", "test_weight", "heading_date"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+  
+  gy_ph_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("grain_yield", "heading_date", "plant_height"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+  
+  gy_tw_ph_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                            genotype_col_name = "fullsamplename",
+                                            env_col_name = "environment",
+                                            traits = c("grain_yield", "test_weight", "heading_date", "plant_height"),
+                                            grm = GRM,
+                                            BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                            BLUE_random = formula(~id(env_col_name)),
+                                            BLUE_residual = formula(~id(units)),
+                                            BLUP_fixed = formula(cbind(y_1, y_2, y_3, y_4) ~ trait),
+                                            BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                            BLUP_residual = formula(~id(units):us(trait)),
+                                            workspace = ram,
+                                            graph_on = g,
+                                            trace_on = t,
+                                            n_maxit = mi)
+  
+  tw_gy_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("test_weight", "grain_yield"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  tw_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("test_weight", "plant_height"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  tw_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("test_weight", "heading_date"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  tw_gy_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("test_weight", "grain_yield", "plant_height"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+  
+  tw_gy_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("test_weight", "grain_yield", "heading_date"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+
+  tw_ph_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("test_weight", "heading_date", "plant_height"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+  
+  tw_gy_ph_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                            genotype_col_name = "fullsamplename",
+                                            env_col_name = "environment",
+                                            traits = c("test_weight", "grain_yield", "heading_date", "plant_height"),
+                                            grm = GRM,
+                                            BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                            BLUE_random = formula(~id(env_col_name)),
+                                            BLUE_residual = formula(~id(units)),
+                                            BLUP_fixed = formula(cbind(y_1, y_2, y_3, y_4) ~ trait),
+                                            BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                            BLUP_residual = formula(~id(units):us(trait)),
+                                            workspace = ram,
+                                            graph_on = g,
+                                            trace_on = t,
+                                            n_maxit = mi)
+  
+  ph_gy_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("plant_height", "grain_yield"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  ph_tw_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("plant_height","test_weight"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+
+  ph_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("test_weight", "heading_date"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+  
+  ph_gy_tw_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("plant_height", "test_weight", "grain_yield"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+
+  ph_gy_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("plant_height", "grain_yield", "heading_date"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+
+  ph_tw_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("plant_height", "test_weight", "heading_date"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+
+  ph_gy_tw_hd_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                            genotype_col_name = "fullsamplename",
+                                            env_col_name = "environment",
+                                            traits = c("plant_height", "grain_yield", "test_weight", "heading_date"),
+                                            grm = GRM,
+                                            BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                            BLUE_random = formula(~id(env_col_name)),
+                                            BLUE_residual = formula(~id(units)),
+                                            BLUP_fixed = formula(cbind(y_1, y_2, y_3, y_4) ~ trait),
+                                            BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                            BLUP_residual = formula(~id(units):us(trait)),
+                                            workspace = ram,
+                                            graph_on = g,
+                                            trace_on = t,
+                                            n_maxit = mi)
+
+  hd_gy_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("heading_date", "grain_yield"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+
+  hd_tw_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("heading_date","test_weight"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+
+  hd_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                      genotype_col_name = "fullsamplename",
+                                      env_col_name = "environment",
+                                      traits = c("heading_date", "plant_height"),
+                                      grm = GRM,
+                                      BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                      BLUE_random = formula(~id(env_col_name)),
+                                      BLUE_residual = formula(~id(units)),
+                                      BLUP_fixed = formula(cbind(y_1, y_2) ~ trait),
+                                      BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                      BLUP_residual = formula(~id(units):us(trait)),
+                                      workspace = NULL,
+                                      graph_on = g,
+                                      trace_on = t,
+                                      n_maxit = NULL)
+
+  hd_gy_tw_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("heading_date", "test_weight", "grain_yield"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+
+  hd_gy_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("heading_date", "grain_yield", "plant_height"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+  
+  hd_tw_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                         genotype_col_name = "fullsamplename",
+                                         env_col_name = "environment",
+                                         traits = c("heading_date", "test_weight", "plant_height"),
+                                         grm = GRM,
+                                         BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                         BLUE_random = formula(~id(env_col_name)),
+                                         BLUE_residual = formula(~id(units)),
+                                         BLUP_fixed = formula(cbind(y_1, y_2, y_3) ~ trait),
+                                         BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                         BLUP_residual = formula(~id(units):us(trait)),
+                                         workspace = NULL,
+                                         graph_on = g,
+                                         trace_on = t,
+                                         n_maxit = NULL)
+
+  hd_gy_tw_ph_mv<-multivariate_five_fold_cv(data = mvm_dat,
+                                            genotype_col_name = "fullsamplename",
+                                            env_col_name = "environment",
+                                            traits = c("heading_date", "grain_yield", "test_weight", "plant_height"),
+                                            grm = GRM,
+                                            BLUE_fixed = formula(y_1 ~ genotype_col_name),
+                                            BLUE_random = formula(~id(env_col_name)),
+                                            BLUE_residual = formula(~id(units)),
+                                            BLUP_fixed = formula(cbind(y_1, y_2, y_3, y_4) ~ trait),
+                                            BLUP_random = formula(~ vm(genotype_col_name, grm):us(trait)+id(env_col_name):id(trait)),
+                                            BLUP_residual = formula(~id(units):us(trait)),
+                                            workspace = ram,
+                                            graph_on = g,
+                                            trace_on = t,
+                                            n_maxit = mi)
+
+  #make dataframe for results
+  a<-data.frame(Permutation = perms,
+                template,
+                corr = c(gy_uv,
+                         tw_uv,
+                         ph_uv,
+                         hd_uv,
+                         gy_tw_mv,
+                         gy_ph_mv,
+                         gy_hd_mv,
+                         gy_tw_ph_mv,
+                         gy_tw_hd_mv,
+                         gy_ph_hd_mv,
+                         gy_tw_ph_hd_mv,
+                         tw_gy_mv,
+                         tw_ph_mv,
+                         tw_hd_mv,
+                         tw_gy_ph_mv,
+                         tw_gy_hd_mv,
+                         tw_ph_hd_mv,
+                         tw_gy_ph_hd_mv,
+                         ph_gy_mv,
+                         ph_tw_mv,
+                         ph_hd_mv,
+                         ph_gy_tw_mv,
+                         ph_gy_hd_mv,
+                         ph_tw_hd_mv,
+                         ph_gy_tw_hd_mv,
+                         hd_gy_mv,
+                         hd_tw_mv,
+                         hd_ph_mv,
+                         hd_gy_tw_mv,
+                         hd_gy_ph_mv,
+                         hd_tw_ph_mv,
+                         hd_gy_tw_ph_mv))
+  
+  #return
+  return(a)
+  
+  #remove()
+  remove(a,
+         j,
+         gy_uv,
+         tw_uv,
+         ph_uv,
+         hd_uv,
+         gy_tw_mv,
+         gy_ph_mv,
+         gy_hd_mv,
+         gy_tw_ph_mv,
+         gy_tw_hd_mv,
+         gy_ph_hd_mv,
+         gy_tw_ph_hd_mv,
+         tw_gy_mv,
+         tw_ph_mv,
+         tw_hd_mv,
+         tw_gy_ph_mv,
+         tw_gy_hd_mv,
+         tw_ph_hd_mv,
+         tw_gy_ph_hd_mv,
+         ph_gy_mv,
+         ph_tw_mv,
+         ph_hd_mv,
+         ph_gy_tw_mv,
+         ph_gy_hd_mv,
+         ph_tw_hd_mv,
+         ph_gy_tw_hd_mv,
+         hd_gy_mv,
+         hd_tw_mv,
+         hd_ph_mv,
+         hd_gy_tw_mv,
+         hd_gy_ph_mv,
+         hd_tw_ph_mv,
+         hd_gy_tw_ph_mv)
+  
+  }
+
+  #stop the cluster
+  stopCluster(cl = cluster)
+  
+  #print
+  print(paste("Permutational CV analysis complete! System time =", Sys.time()))
+  
+  #save the results
+  save.image(paste("CV-Results-", Sys.Date(), ".RData", sep=""))
+
+}else{
+  
+  #stop cluster
+  stopCluster(cl = cluster)
+
+  
+  #announce
+  print("The CV study is already done... Moving on!")
+  
+}
+```
+
+# Visualization of Results 
+
+Here I am going to visualize the results of the CV study. I am also going to summarize the results here. I will be estimating Z scores for each distribution as such:
+
+$$
+\bar{Z}=\frac{\bar{x_i}-\bar{x}_{univariate}}{\bar{s_i}}
+$$
+
+Here, let $\bar{x}$ be the sample mean of the model cross validation results, $\bar{x}_{univariate}$ is the sample mean of the univariate case, and $s_i$ is the sample standard deviation of the model cross validation results. This means that we are looking at if a multivariate model distribution is significantly different than the univariate case.
+
+```{r}
+#load the workspace
+load(check)
+
+#go long format for ggplot
+gg_dat<-CV_Corrs %>%
+  mutate(Trait = Trait_1) %>%
+  mutate(Trait = gsub("_", " ",Trait)) %>%
+  mutate(Trait_1=ifelse(Trait_1=="Grain_Yield", "GY",
+                        ifelse(Trait_1=="Test_Weight", "TW",
+                              ifelse(Trait_1=="Plant_Height", "PH",
+                                      ifelse(Trait_1=="Heading_Date", "HD", Trait_1))))) %>%
+  mutate(Trait_2=ifelse(Trait_2=="Grain_Yield", "GY",
+                        ifelse(Trait_2=="Test_Weight", "TW",
+                              ifelse(Trait_2=="Plant_Height", "PH",
+                                      ifelse(Trait_2=="Heading_Date", "HD", Trait_2))))) %>%
+  mutate(Trait_3=ifelse(Trait_3=="Grain_Yield", "GY",
+                        ifelse(Trait_3=="Test_Weight", "TW",
+                              ifelse(Trait_3=="Plant_Height", "PH",
+                                      ifelse(Trait_3=="Heading_Date", "HD", Trait_3))))) %>%
+  mutate(Trait_4=ifelse(Trait_4=="Grain_Yield", "GY",
+                        ifelse(Trait_4=="Test_Weight", "TW",
+                              ifelse(Trait_4=="Plant_Height", "PH",
+                                      ifelse(Trait_4=="Heading_Date", "HD", Trait_4))))) %>%
+  mutate(Model=ifelse(is.na(Trait_2), paste("Univariate", Trait_1), 
+                      ifelse(is.na(Trait_3), paste(Trait_1, "+", Trait_2), 
+                             ifelse(is.na(Trait_4), paste(Trait_1, "+", Trait_2, "+", Trait_3),
+                                          ifelse(!is.na(Trait_4), paste(Trait_1, "+", Trait_2, "+", Trait_3, "+", Trait_4), "check code"))))) %>%
+  dplyr::select(Permutation, Trait, Model, corr) %>%
+  rename(R=corr)
+
+gg_dat$Model<-factor(gg_dat$Model, levels = unique(gg_dat$Model))
+
+#write huge ggplot statement 
+
+CV_table<-c()
+
+for(i in unique(gg_dat$Trait)){
+  
+  table_dat<-gg_dat %>%
+    filter(Trait==all_of(i)) %>%
+    mutate(u=mean(R)) 
+  
+  table_dat<-table_dat %>%
+    group_by(Model) %>%
+    summarise(Min=min(R), Mean=mean(R), Max=max(R), s=sd(R)) 
+  
+  x_bar_univariate=as.numeric(table_dat[grep("Uni",table_dat$Model), "Mean"])
+  s_bar_univariate=as.numeric(table_dat[grep("Uni",table_dat$Model), "s"])
+    
+  table_dat<-table_dat %>%
+    mutate(`Z Score`=(Mean-all_of(x_bar_univariate))/all_of(s_bar_univariate)) %>%
+    mutate(Significance=ifelse(`Z Score`>1.65 | `Z Score`<(-1.65), "*", "NS"))
+  
+ CV_table<-rbind(CV_table, table_dat)
+ 
+ remove(a, table_dat, x_bar_univariate)
+ 
+}
+
+kable(CV_table, 
+      digits = 2, 
+      caption = "Table of Cross Validation Results Summarization",
+      align = "c")
+
+write.csv(CV_Corrs, "Raw_CV_Permutation_Results.csv", row.names = F)
+write.csv(CV_table,"CV_Table_Summary.csv",row.names = F)
+```
+
+
+```{r}
+  
+a<-ggplot(data = gg_dat %>% filter(Trait=="Grain Yield"), aes(y=R, x=Model, fill=Model))+
+    geom_boxplot()+
+    theme_bw()+
+    labs(y="r",
+         x="Model")+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90),
+          axis.title.x = element_blank())
+b<-ggplot(data = gg_dat %>% filter(Trait=="Test Weight"), aes(y=R, x=Model, fill=Model))+
+    geom_boxplot()+
+    theme_bw()+
+    labs(y="r",
+         x="Model")+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank())
+c<-ggplot(data = gg_dat %>% filter(Trait=="Plant Height"), aes(y=R, x=Model, fill=Model))+
+    geom_boxplot()+
+    theme_bw()+
+    labs(y="r",
+         x="Model")+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90))
+d<-ggplot(data = gg_dat %>% filter(Trait=="Heading Date"), aes(y=R, x=Model, fill=Model))+
+    geom_boxplot()+
+    theme_bw()+
+    labs(y="r",
+         x="Model")+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90),
+          axis.title.y = element_blank())
+
+library(patchwork)
+
+a<-((a+b)/(c+d))+
+  plot_annotation(tag_levels = "A")
+ggsave(filename = "Fig_8.png",
+       plot = a,
+       device = "png",
+       dpi = 300,
+       width = 8,
+       height = 11)
+
+```
+
+
+# Calculate BLUEs within year across locations for the Arkansas ADV 
+
+Here I am calculating the BLUEs for the ADV trials for Arkansas from 2017 to 2020.
+
+```{r}
+#pull data
+pheno_dat<-read.csv("Complete_ABB_and_AR_ADV_dat.csv") %>%
+  filter(population=="AR_ADV") %>%
+  filter(!year==2017)
+year_blues_fv<-c()
+
+#calculate adj means within year
+for(i in unique(pheno_dat$year)){
+  
+  a<-pheno_dat %>%
+    filter(year==i)
+  a[,1:10]<-lapply(a[,1:10], as.factor)
+  a[,11:ncol(a)]<-lapply(a[,11:ncol(a)], as.numeric)
+  results<-a %>%
+    distinct(genotype, .keep_all = T) %>%
+    dplyr::select(genotype, fullsamplename, year)
+  
+  for(j in colnames(a)[11:ncol(a)]){
+    
+    b<-a %>%
+      dplyr::select(environment, rep, genotype, all_of(j)) %>% 
+      drop_na()
+    colnames(b)[4]<-"y"
+    fit<-try(asreml(fixed = y~genotype,
+                    random = ~idv(environment):idv(rep),
+                    residual = ~idv(units),
+                    data = b,
+                    trace = F))
+    if(class(fit)=="try-error"){
+      
+      print(paste("Abandoning Model: The advanced in", i, "produced a singularity for", j))
+      pred<-b %>%
+        distinct(genotype) %>%
+        mutate(trait=NA)
+      colnames(pred)[2]=j
+      results<-results %>%
+        left_join(pred, by="genotype")
+      remove(b,fit,pred)
+    
+    }else{
+    
+      fit<-update(fit)
+      pred<-predict(fit, classify = "genotype")$pvals[,1:2]
+      colnames(pred)[2]=j
+      results<-results %>%
+        left_join(pred, by="genotype")
+      remove(b,fit,pred)
+          
+    }
+    
+    
+  }
+  
+  year_blues_fv<-rbind(year_blues_fv, results)
+  remove(a, results)
+}
+
+#show correlations
+for_graph<-year_blues_fv %>%
+  rename(`Plant Height (cm)`=plant_height,
+         `Heading Date (Days)`=heading_date,
+         `Grain Yield (t/ha)`=grain_yield,
+         `Test Weight (kg/hL)`=test_weight) %>%
+  select(-year, -fullsamplename)
+
+pairs.panels(for_graph[,2:ncol(for_graph)],
+             lm = T,
+             hist.col = "gray",
+             stars = T)
+```
+
+# Calculate BLUEs across year and locations for the Arkansas ADV 
+
+```{r}
+#pull data
+pheno_dat<-read.csv("Complete_ABB_and_AR_ADV_dat.csv") %>%
+  filter(population=="AR_ADV") %>%
+  filter(!year==2017)
+memy_blues_fv<-pheno_dat %>%
+  distinct(genotype, fullsamplename)
+
+#calculate adj means within year
+for(i in colnames(pheno_dat)[11:ncol(pheno_dat)]){
+  
+  #select data
+  a<-pheno_dat %>%
+    dplyr::select(environment, rep, genotype, fullsamplename, all_of(i))
+  colnames(a)[5]<-"y"
+  a<-a %>%
+    drop_na(y)
+  
+  #make sure everything is formatted right
+  a[,1:4]<-lapply(a[,1:4], as.factor)
+  a[,5]<-as.numeric(a[,5])
+  
+  fit<-try(asreml(fixed = y~genotype,
+                  random = ~idv(environment):idv(rep),
+                  residual = ~idv(units),
+                  data = a,
+                  trace = F))
+  
+  if(class(fit)=="try-error"){
+    
+    print(paste("Abandoning Model: The advanced in", i, "produced a singularity for", j))
+    pred<-b %>%
+      distinct(genotype) %>%
+      mutate(trait=NA)
+    colnames(pred)[2]=i
+    results<-results %>%
+      left_join(pred, by="genotype")
+    remove(b,fit,pred)
+  
+  }else{
+  
+    fit<-update(fit)
+    pred<-predict(fit, classify = "genotype")$pvals[,1:2]
+    a<-a %>%
+      distinct(genotype,fullsamplename)
+    pred<-a %>%
+      left_join(pred, by="genotype")
+    colnames(pred)[3]=i
+    memy_blues_fv<-memy_blues_fv %>%
+      left_join(pred, by=c("genotype", "fullsamplename"))
+    remove(a,fit,pred)
+        
+  }
+  
+}
+
+#show correlations
+for_graph<-memy_blues_fv %>%
+  rename(`Plant Height (cm)`=plant_height,
+         `Heading Date (Days)`=heading_date,
+         `Grain Yield (t/ha)`=grain_yield,
+         `Test Weight (kg/hL)`=test_weight) %>%
+  select(-fullsamplename)
+
+pairs.panels(for_graph[,2:ncol(for_graph)],
+             lm = T,
+             hist.col = "gray",
+             stars = T)
+```
+
+# Forward Validation of Univariate within and across years
+
+Here I take the 2018 and 2020 advanced BLUEs across locations. What I do here is I take the best models and apply them in multivariate prediction
+
+```{r}
+#import genotypic data
+#read files
+files<-list.files()
+geno_file_name<-files[grep(".vcf.gz", files, ignore.case = T)]
+
+#calculate GRM
+geno_mat<-as.matrix(read.vcf(geno_file_name[1], convert.chr = FALSE))-1
+GRM<-A.mat(geno_mat)
+
+#only pull out lines in the ADV that are present in the genotypic matrix
+fv_dat<-year_blues_fv %>%
+  filter(fullsamplename %in% colnames(GRM)) %>%
+  filter(!year==2019)
+
+#bind training in
+#define dataset
+mvm_dat<-location_blues_cv
+mvm_dat<-mvm_dat %>% 
+  filter(fullsamplename %in% colnames(GRM))
+
+a<-mvm_dat %>% distinct(environment, fullsamplename)
+
+for(i in trait_names){
+  b<-mvm_dat %>% 
+    filter(trait==i) %>%
+    dplyr::select(environment, fullsamplename, blue)
+  colnames(b)[3]=i
+  a<-left_join(a,b, by=c("environment", "fullsamplename"))
+}
+
+mvm_dat<-a
+
+remove(a,b)
+
+#format all collumns
+mvm_dat[,1:2]<-lapply(mvm_dat[,1:2], as.factor)
+mvm_dat[,3:ncol(mvm_dat)]<-lapply(mvm_dat[,3:ncol(mvm_dat)], as.numeric)
+
+#put together in one big dataframe
+mvm_dat<-mvm_dat %>%
+  mutate(population="ABB",
+         year=NA) %>%
+  select(fullsamplename,
+         environment,
+         year,
+         population,
+         plant_height,
+         heading_date,
+         grain_yield,
+         test_weight) %>%
+  filter(!fullsamplename %in% fv_dat)
+
+fv_dat<-fv_dat %>%
+  mutate(population="AR_ADV",
+         environment="forward_validation") %>%
+  select(fullsamplename,
+         environment,
+         year,
+         population,
+         plant_height,
+         heading_date,
+         grain_yield,
+         test_weight)
+
+a<-memy_blues_fv %>%
+  drop_na(fullsamplename) %>%
+  mutate(population="AR_ADV",
+         environment="forward_validation",
+         year="Combined") %>%
+  select(fullsamplename,
+         environment,
+         year,
+         population,
+         plant_height,
+         heading_date,
+         grain_yield,
+         test_weight)
+
+
+#make sure to avoid insider trading
+fsn_fv<-unique(c(a$fullsamplename,fv_dat$fullsamplename))
+fsn_cv<-unique(as.character(mvm_dat$fullsamplename))
+toss_me<-fsn_cv[fsn_fv %in% fsn_cv]
+
+#toss those individuals out of the training data
+mvm_dat<-mvm_dat[!mvm_dat$fullsamplename %in% toss_me,]
+
+#now bind
+fv_dat=rbind(a,fv_dat, mvm_dat)
+
+remove(a, mvm_dat, fsn_fv, fsn_cv, toss_me)
+
+#format
+fv_dat[,1:4]<-lapply(fv_dat[,1:4], as.factor)
+fv_dat[,5:ncol(fv_dat)]<-lapply(fv_dat[,5:ncol(fv_dat)], as.numeric)
+
+#make sure that the GRM and fv_dat have the same fullsamplenames
+fv_dat<-fv_dat %>%
+  filter(fullsamplename %in% rownames(GRM))
+
+#filter GRM
+GRM<-GRM[rownames(GRM) %in% fv_dat$fullsamplename,
+         colnames(GRM) %in% fv_dat$fullsamplename]
+
+#results
+fv_results<-c()
+
+#run univariate analysis
+for(i in c(2018,2020,"Combined")){
+  
+  #pull correct year
+  a<-fv_dat %>%
+    filter(year==i |
+             is.na(year)) %>%
+    drop_na(fullsamplename)
+  
+  #make an empty vector
+  results<-c()
+  
+  for(j in colnames(fv_dat)[5:ncol(fv_dat)]){
+    
+    #pull specific phenotype
+    b<-a %>%
+      select(fullsamplename, year, environment, all_of(j))
+    
+    #rename
+    colnames(b)[4]="y"
+    
+    #drop missing for y
+    b<-b %>%
+      drop_na(y)
+    
+    #make missing entries in fv population
+    b<-b %>%  
+      mutate(y_miss=ifelse(environment=="forward_validation", NA, y))
+    
+    #make sure columns are formatted correctly
+    b[,1:3]<-lapply(b[,1:3], as.factor)
+    b[,4:ncol(b)]<-lapply(b[,4:ncol(b)], as.numeric)
+    
+    #pull only lines in the dataset in the GRM
+    grm<-GRM[rownames(GRM) %in% b$fullsamplename,
+             colnames(GRM) %in% b$fullsamplename]
+  
+    fit<-asreml(fixed = y_miss~1,
+                random = ~vm(fullsamplename, grm)+idv(environment),
+                residual = ~idv(units),
+                data = b,
+                trace = FALSE)
+    
+    pred<-predict(fit, classify = "fullsamplename")$pvals[,1:2]
+    
+    #pull the test pop
+    actual<-b %>%
+      filter(is.na(y_miss)) %>%
+      select(fullsamplename, y)
+    
+    #align
+    validate<-actual %>%
+      left_join(pred, by="fullsamplename") %>%
+      rename(GEBV=predicted.value,
+             TBV=y)
+    
+    #graph
+    d<-ggplot(data = validate, aes(x=TBV, y=GEBV))+
+      geom_point()+
+      labs(title = "True Breeding Value (TBV) vs Genomic Estimated Breeding Value (GEBV)",
+           subtitle = paste("Trait = ", j, "; Year = ", i))
+    print(d)
+    
+    #perform regression and correlation
+    fit<-lm(TBV~GEBV, data = validate)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred<-data.frame(year=i,
+                     trait=j,
+                     r=cor(validate[,2:3])[1,2],
+                     r2=fit$r.squared,
+                     RSME=d)
+    
+    #put into results
+    results<-rbind(results,pred)
+    
+    #remove
+    remove(b, grm, fit, pred, d, actual, validate)
+    
+  }
+  
+  #bind in results
+  fv_results<-rbind(fv_results, results)
+  
+  #remove
+  remove(a, results)
+}
+
+```
+
+# Run Multivariate Models
+
+Here I run the highest CV multivariate models to see if they improve forward prediction accuracy.
+
+```{r}
+#detect cores
+n_cores = detectCores()-1
+
+#Leave one core to avoid overload your computer
+cluster<-makeCluster(n_cores)
+registerDoParallel(cluster)
+
+#check for environment
+files<-list.files()
+
+#check and see if the results are already there
+check<-files[grep("FV-Results-", files, ignore.case = T)]
+
+if(length(check)==0){
+  
+  #print
+  print(paste("Begining forward validation analysis! System time =", Sys.time()))
+
+  #mv results
+  fv_mv_results<-foreach(i=unique(fv_dat$year)[!is.na(unique(fv_dat$year))], .combine=rbind) %dopar% {
+    
+    #workspace
+    ws<-"4gb"
+    assign("ws", ws, envir = globalenv() )
+    
+    #change trait
+    y<-"grain_yield"
+    
+    #first model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred1<-data.frame(year=i,
+                      trait="GY + TW",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d)
+    remove(a,b,fit,corr,pred,d)
+    
+    #second model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred2<-data.frame(year=i,
+                      trait="GY + TW + HD",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d)
+    remove(a,b,fit,corr,pred,d)
+    
+    #third model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight,
+                                      heading_date,
+                                      plant_height)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred3<-data.frame(year=i,
+                      trait="GY + TW + HD + PH",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d)
+    remove(a,b,fit,corr,pred,d)
+    
+    #change trait
+    y<-"test_weight"
+    
+    #fourth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred4<-data.frame(year=i,
+                      trait="TW + GY",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d)
+    remove(a,b,fit,corr,pred,d)
+    
+    #fifth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight,
+                                      plant_height)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred5<-data.frame(year=i,
+                      trait="TW + GY + PH",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d)
+    remove(a,b,fit,corr,pred,d)
+  
+    #sixth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight,
+                                      plant_height,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred6<-data.frame(year=i,
+                      trait="TW + GY + PH + HD",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d)      
+    remove(a,b,fit,corr,pred,d)
+    
+    #change trait
+    y<-"plant_height"
+    
+    #seventh model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(test_weight,
+                                      plant_height)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred7<-data.frame(year=i,
+                      trait="PH + TW",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d)
+    remove(a,b,fit,corr,pred,d)
+    
+    #eighth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(test_weight,
+                                      plant_height,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred8<-data.frame(year=i,
+                      trait="PH + TW + HD",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d) 
+    remove(a,b,fit,corr,pred,d)
+    
+    #change trait
+    y="heading_date"
+    
+    #ninth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(test_weight,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred9<-data.frame(year=i,
+                      trait="HD + TW",
+                      r=cor(corr)[1,2],
+                      r2=fit$r.squared,
+                      RSME=d) 
+    remove(a,b,fit,corr,pred,d)
+    
+  
+    #tenth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(test_weight,
+                                      plant_height,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred10<-data.frame(year=i,
+                       trait="HD + TW + PH",
+                       r=cor(corr)[1,2],
+                       r2=fit$r.squared,
+                       RSME=d) 
+    remove(a,b,fit,corr,pred,d)
+    
+    #eleventh model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight,
+                                      plant_height,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred11<-data.frame(year=i,
+                       trait="HD + GY + TW + PH",
+                       r=cor(corr)[1,2],
+                       r2=fit$r.squared,
+                       RSME=d)
+    remove(a,b,fit,corr,pred,d)
+    
+    y="grain_yield"
+    
+    #twelth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight,
+                                      plant_height)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred12<-data.frame(year=i,
+                       trait="GY + TW + PH",
+                       r=cor(corr)[1,2],
+                       r2=fit$r.squared,
+                       RSME=d)
+    
+    y="plant_height"
+    
+    #thirteenth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(grain_yield,
+                                      test_weight,
+                                      plant_height,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred13<-data.frame(year=i,
+                       trait="PH + GY + TW + HD",
+                       r=cor(corr)[1,2],
+                       r2=fit$r.squared,
+                       RSME=d)
+    y="heading_date"
+    
+    #fourteenth model
+    a<-fv_dat[fv_dat$year==i | is.na(fv_dat$year),]
+    a$TBV=a[,y]
+    a[,y]=ifelse(a$population=="AR_ADV", NA, a[,y])
+    b<-GRM[rownames(GRM) %in% a$fullsamplename,
+           colnames(GRM) %in% a$fullsamplename]
+    assign("a", a, envir = globalenv() )
+    assign("b", b, envir = globalenv() )
+    fit<-asreml::asreml(fixed = cbind(plant_height,
+                                      heading_date)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = ws,
+              maxit = 50,
+              trace = TRUE)
+    fit<-asreml::update.asreml(fit)
+    pred<-asreml::predict.asreml(fit, classify="fullsamplename:trait", pworkspace = ws)$pvals
+    pred<-pred[pred$trait==y,1:3]
+    colnames(pred)[3]="GEBV"  
+    pred=pred[,c(1,3)]
+    corr<-a[a$population=="AR_ADV",c("fullsamplename", "TBV")]
+    pred<-pred[pred$fullsamplename %in% corr$fullsamplename,]
+    pred<-pred[match(corr$fullsamplename, pred$fullsamplename),]
+    corr<-data.frame(TBV=corr$TBV, GEBV=pred$GEBV)
+    fit<-lm(TBV~GEBV, data = corr)
+    d<-sqrt(mean(fit$residuals^2))
+    fit<-summary(fit)
+    pred14<-data.frame(year=i,
+                       trait="PH + HD",
+                       r=cor(corr)[1,2],
+                       r2=fit$r.squared,
+                       RSME=d)
+    
+    
+    
+    pred<-rbind(pred1,
+                pred2,
+                pred3,
+                pred4,
+                pred5,
+                pred6,
+                pred7,
+                pred8,
+                pred9,
+                pred10,
+                pred11,
+                pred12,
+                pred13,
+                pred14)
+    
+    return(pred)
+    
+    remove(a,
+           b,
+           fit,
+           corr,
+           d,
+           pred,
+           pred1,
+           pred2,
+           pred3,
+           pred4,
+           pred5,
+           pred6,
+           pred7,
+           pred8,
+           pred9,
+           pred10,
+           pred11,
+           pred12,
+           pred13,
+           pred14)
+  }
+  
+  #stop cluster
+  stopCluster(cl = cluster)
+  
+  #print
+  print(paste("Forward validation analysis complete! System time =", Sys.time()))
+  
+  #save the results
+  save.image(paste("FV-Results-", Sys.Date(), ".RData", sep=""))
+  
+}else{
+  
+  #stop cluster
+  stopCluster(cl = cluster)
+ 
+  #announce
+  print("The FV study is already done... Moving on!")
+}
+```
+
+# Look at forward validation results
+
+```{r}
+#load results
+load(check)
+
+#combine fv results
+fv_graphs<-rbind(fv_results, fv_mv_results) %>%
+  mutate(trait=ifelse(trait=="grain_yield", "Univariate GY",
+                      ifelse(trait=="test_weight", "Univariate TW",
+                             ifelse(trait=="plant_height", "Univariate PH",
+                                    ifelse(trait=="heading_date", "Univariate HD", trait))))) %>%
+  filter(!trait=="HD + TW")
+
+#make a vector for organization
+org<-c("Univariate GY", "GY + TW", "GY + TW + PH", "GY + TW + HD", "GY + TW + HD + PH",
+       "Univariate TW", "TW + GY", "TW + GY + PH", "TW + GY + PH + HD",
+       "Univariate PH", "PH + TW", "PH + HD","PH + TW + HD", "PH + GY + TW + HD",
+       "Univariate HD", "HD + PH", "HD + TW + PH", "HD + GY + TW + PH")
+
+org[!unique(fv_graphs$trait) %in% org]
+unique(fv_graphs$trait)[!unique(fv_graphs$trait) %in% org]
+
+
+fv_graphs$trait=factor(fv_graphs$trait, levels = org)
+fv_graphs<-fv_graphs[order(fv_graphs$year, fv_graphs$trait),]
+fv_graphs$pred<-c(rep("GY", 5),
+                  rep("TW", 4),
+                  rep("PH", 5),
+                  rep("HD", 3))
+
+    
+a<-fv_graphs[fv_graphs$pred=="GY",]
+
+b<-c(-0.07, -0.1, -0.1, -0.1, -0.07,
+     0.14, 0.05, 0.05, 0.04, 0.11,
+     0.11, 0.04, 0.06, 0.04, 0.13)
+
+z<-ggplot(data = a,
+          aes(x=trait,
+              y=r))+
+  geom_col(fill="gray")+
+  geom_text(aes(label=round(r, 2), y=b))+
+  facet_wrap(~year, nrow = 3, ncol = 1)+
+  theme_bw()+
+  labs(title = "Grain Yield",
+       y="r")+
+  theme(axis.text.x = element_text(angle = 90),
+        legend.position = "none",
+        axis.title.x = element_blank())
+z
+
+remove(a)
+
+a<-fv_graphs[fv_graphs$pred=="TW",]
+c<-c(-0.10,-0.06,0.07,0.07,
+     0.05,0.05,0.05,0.15,
+     -0.04,-0.03,0.04,0.14)
+
+zz<-ggplot(data = a,
+          aes(x=trait,
+              y=r))+
+  geom_col(fill="gray")+
+  geom_text(aes(label=round(r, 2), y=c))+
+  facet_wrap(~year, nrow = 3, ncol = 1)+
+  theme_bw()+
+  labs(title = "Test Weight")+
+  theme(axis.text.x = element_text(angle = 90),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+zz  
+
+remove(a)
+
+a<-fv_graphs[fv_graphs$pred=="PH",]
+a<-a %>% filter(!trait=="PH + HD")
+d<-c(0.06,0.23,0.36,0.40,
+     0.25,0.19,0.24,0.23,
+     0.12,0.21,0.27,0.32)
+zzz<-ggplot(data = a,
+          aes(x=trait,
+              y=r))+
+  geom_col(fill="gray")+
+  geom_text(aes(label=round(r, 2), y=d))+
+  facet_wrap(~year, nrow = 3, ncol = 1)+
+  theme_bw()+
+  labs(title = "Plant Height",
+       y="r",
+       x="Model")+
+  theme(axis.text.x = element_text(angle = 90),
+        legend.position = "none")
+zzz  
+
+remove(a)
+
+
+a<-fv_graphs[fv_graphs$pred=="HD",]
+e<-c(0.24,0.31,0.31,
+     0.26,0.39,0.45,
+     0.18,0.28,0.35)
+zzzz<-ggplot(data = a,
+          aes(x=trait,
+              y=r))+
+  geom_col(fill="gray")+
+  geom_text(aes(label=round(r, 2), y=e))+
+  facet_wrap(~year, nrow = 3, ncol = 1)+
+  theme_bw()+
+  labs(title = "Heading Date",
+       x="Model")+
+  theme(axis.text.x = element_text(angle = 90),
+        legend.position = "none",
+        axis.title.y = element_blank())
+zzzz
+remove(a)
+
+library(patchwork)
+
+a<-((z+zz)/(zzz+zzzz)) + 
+  plot_annotation(tag_levels = "A")
+a
+ggsave(filename = "Fig_7.png",
+       plot = a,
+       device = "png",
+       dpi = 300,
+       width = 8,
+       height = 11)
+```
+
+```{r}
+a<-fv_dat %>%
+  filter(year=="2018") %>% 
+  select(grain_yield, test_weight, plant_height, heading_date) %>%
+  rename(`Grain Yield`=grain_yield,
+         `Test Weight`=test_weight,
+         `Plant Height`=plant_height,
+         `Heading Date`=heading_date)
+a<-cor(a)
+a<-a[order(rownames(a)), order(colnames(a))]
+b<-ggcorrplot(a,
+              method = "square",
+              type = "upper",
+              show.diag = FALSE,
+              show.legend = TRUE,
+              legend.title = "r",
+              lab = T)
+
+a<-fv_dat %>%
+  filter(year=="2020") %>% 
+  select(grain_yield, test_weight, plant_height, heading_date) %>%
+  rename(`Grain Yield`=grain_yield,
+         `Test Weight`=test_weight,
+         `Plant Height`=plant_height,
+         `Heading Date`=heading_date)
+a<-cor(a)
+a<-a[order(rownames(a)), order(colnames(a))]
+c<-ggcorrplot(a,
+              method = "square",
+              type = "upper",
+              show.diag = FALSE,
+              show.legend = TRUE,
+              legend.title = "r",
+              lab = T)
+
+a<-fv_dat %>%
+  filter(year=="Combined") %>% 
+  select(grain_yield, test_weight, plant_height, heading_date) %>%
+  rename(`Grain Yield`=grain_yield,
+         `Test Weight`=test_weight,
+         `Plant Height`=plant_height,
+         `Heading Date`=heading_date)
+a<-cor(a)
+a<-a[order(rownames(a)), order(colnames(a))]
+d<-ggcorrplot(a,
+              method = "square",
+              type = "upper",
+              show.diag = FALSE,
+              show.legend = TRUE,
+              legend.title = "r",
+              lab = T)
+
+
+a<-(b+c+d)+
+  plot_annotation(tag_levels = "A")+
+  plot_layout(guides = "collect")
+
+ggsave(filename = "Fig_9.png",
+       plot = a,
+       device = "png",
+       dpi = 300,
+       width = 11,
+       height = 8)
+
+#calculate genetic correlations
+results<-list()
+
+#define datasets
+for(i in c("2018", "2020", "Combined")){
+  
+  #dataset
+  a<-pheno_dat %>% 
+    filter(year==i) %>%
+    select(fullsamplename, environment, plant_height, heading_date, grain_yield, test_weight) %>%
+    drop_na(fullsamplename)
+
+  if(i=="Combined"){
+    j=c("2018", "2020")
+    a<-pheno_dat %>% 
+      filter(year==j) %>%
+      select(fullsamplename, environment, plant_height, heading_date, grain_yield, test_weight) %>%
+      drop_na(fullsamplename)
+  }
+  
+  b<-GRM[rownames(GRM) %in% a$fullsamplename,
+         colnames(GRM) %in% a$fullsamplename]
+  
+  a[,1:2]<-lapply(a[,1:2], as.factor)
+  a[,3:ncol(a)]<-lapply(a[,3:ncol(a)], as.numeric)
+  
+  #write a multivariate variate model to estimate genetic correlation
+  fit<-asreml(fixed = cbind(plant_height,
+                            heading_date,
+                            grain_yield,
+                            test_weight)~trait,
+              random = ~vm(fullsamplename, b):us(trait)+id(trait):id(environment),
+              residual = ~id(units):us(trait),
+              data = a,
+              na.action = asreml::na.method(y='include', x='include'),
+              workspace = "10gb",
+              maxit = 50,
+              trace = TRUE)
+  fit<-update.asreml(fit)
+  
+  #calculate the genetic correlation of traits in the data
+  vcomp<-data.frame(summary(fit)$varcomp)
+  vcomp<-rownames_to_column(vcomp, "variance_component_id")
+  rownames(vcomp)<-paste("V",seq(1:nrow(vcomp)), sep = "")
+  colnames(vcomp)[2:ncol(vcomp)]<-c("component_estimate",
+                                   "standard_error",
+                                   "z_ratio",
+                                   "bound_check",
+                                   "percent_change_in_last_iteration")
+  kable(vcomp, align = "c", digits = 2, caption = "Multi-Trait Model Variance Components")
+  
+  ph_hd<-vpredict(fit, ~ V3 / sqrt(V2 * V4))$Estimate
+  ph_tw<-vpredict(fit, ~ V8 / sqrt(V2 * V11))$Estimate
+  ph_gy<-vpredict(fit, ~ V5 / sqrt(V2 * V7))$Estimate
+  gy_tw<-vpredict(fit, ~ V10 / sqrt(V7 * V11))$Estimate
+  gy_hd<-vpredict(fit, ~ V6 / sqrt(V7 * V4))$Estimate
+  tw_hd<-vpredict(fit, ~ V9 / sqrt(V11 * V4))$Estimate
+  
+  cormat<-matrix(data=c(1,gy_tw,gy_hd,ph_gy,
+                        0, 1, tw_hd, ph_tw,
+                        0, 0, 1, ph_hd,
+                        0, 0 , 0, 1),
+         
+                 ncol = 4,
+                 nrow = 4,
+                 byrow = T)
+  cormat[lower.tri(cormat)]=cormat[upper.tri(cormat)]
+  colnames(cormat)<-c("Grain Yield", "Test Weight", "Heading Date", "Plant Height")
+  rownames(cormat)<-colnames(cormat)
+  
+  h2_ph<-vpredict(fit, ~ V2/(V2+V13))
+  h2_hd<-vpredict(fit, ~ V4/(V4+V15))
+  h2_gy<-vpredict(fit, ~ V7/(V7+V18))
+  h2_tw<-vpredict(fit, ~ V11/(V11+V22))
+  
+  
+  h2<-rbind(h2_gy,
+            h2_tw,
+            h2_ph,
+            h2_hd)
+
+  h2<-cbind(Year=i,
+            Trait=c("grain_yield",
+                    "test_weight",
+                    "plant_height",
+                    "heading_date"),
+            h2)
+  
+  a<-list(corr_mat=cormat,
+          h2=h2)
+  
+  results[[i]]=a
+
+  remove(a)
+}
+
+h2_adv<-rbind(results[["2018"]]$h2,
+              results[["2020"]]$h2,
+              results[["Combined"]]$h2) %>%
+  arrange(Trait, Year) %>%
+  mutate(Trait=ifelse(Trait=="grain_yield", "Grain Yield",
+                      ifelse(Trait=="heading_date", "Heading Date",
+                             ifelse(Trait=="plant_height", "Plant Height",
+                                    ifelse(Trait=="test_weight", "Test Weight", "ERROR")))),
+         Trait=factor(Trait, levels = c("Grain Yield", "Test Weight", "Plant Height", "Heading Date"))) %>%
+  arrange(Trait, Year) %>%
+  select(Trait, Year, Estimate, SE)
+write.csv(h2_adv, 
+          "fv_h2.csv",
+          row.names = F)
+
+
+a<-results[["2018"]]$corr_mat[order(rownames(results[["2018"]]$corr_mat)),order(rownames(results[["2018"]]$corr_mat))]
+b<-ggcorrplot(a,
+              method = "square",
+              type = "upper",
+              show.diag = FALSE,
+              show.legend = TRUE,
+              legend.title = "r",
+              lab = T)
+
+a<-results[["2020"]]$corr_mat[order(rownames(results[["2020"]]$corr_mat)),order(rownames(results[["2020"]]$corr_mat))]
+c<-ggcorrplot(a,
+              method = "square",
+              type = "upper",
+              show.diag = FALSE,
+              show.legend = TRUE,
+              legend.title = "r",
+              lab = T)
+
+a<-results[["Combined"]]$corr_mat[order(rownames(results[["Combined"]]$corr_mat)),order(rownames(results[["Combined"]]$corr_mat))]
+d<-ggcorrplot(a,
+              method = "square",
+              type = "upper",
+              show.diag = FALSE,
+              show.legend = TRUE,
+              legend.title = "r",
+              lab = T)
+
+
+a<-(b+c+d)+
+  plot_annotation(tag_levels = "A")+
+  plot_layout(guides = "collect")
+
+ggsave(filename = "Fig_10.png",
+       plot = a,
+       device = "png",
+       dpi = 300,
+       width = 11,
+       height = 8)
+
+
+```
+
+# stuff for the publication
+
+```{r}
+a<-fv_dat %>%
+  filter(year=="2018" |
+           year=="2020" |
+           year=="Combined") %>%
+  group_by(year) %>%
+  distinct(year, fullsamplename) %>%
+  count()
+
+print(a)
+
+a<-pheno_dat %>%
+  filter(year=="2018" |
+           year=="2020") %>%
+  distinct(year, environment, rep)
+
+print(a)
+
+a<-pheno_dat %>%
+  filter(year=="2018" |
+           year=="2020") %>%
+  select(year, environment, heading_date) %>%
+  drop_na() %>%
+  distinct(year, environment)
+
+print(a)
+
+a<-pheno_dat %>%
+  filter(year=="2018" |
+           year=="2020") %>%
+  select(year, environment, plant_height) %>%
+  drop_na() %>%
+  distinct(year, environment)
+
+print(a)
+
+#nmar
+a<-ncol(geno_mat)
+```
+
