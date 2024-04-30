@@ -1,2 +1,2 @@
-# MVGS-improves-GP-Accuracy-in-SRWW
-This is a public repository for relevant code from the publication found at https://doi.org/10.1002/csc2.20994. Original R code for the study is provided here at this link. To get access to the data files relevant to the code, please contact Zachary Winn (zwinn@outlook.com). Privatized data associated with code is now available as of 9/20/23! NOTE: this will require some changing of code in the final script to produce similar results.
+# Introduction
+This is a public repository for relevant code from the publication found at [this link](https://doi.org/10.1002/csc2.20994). Privatized data associated with code is now available as of 9/20/23! NOTE: this will require some changing of code in the final script to produce similar results.
